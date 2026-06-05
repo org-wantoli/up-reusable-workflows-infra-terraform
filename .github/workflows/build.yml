@@ -1,0 +1,365 @@
+name: "Terraform Workflow"
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+on:
+  workflow_call:
+    inputs:
+      application-publish:
+        required: false
+        type: boolean
+        default: false
+      runs-on:
+        required: false
+        type: string
+        default: "ubuntu-latest"
+      deploy-aws-dev-account:
+        required: false
+        type: string
+      deploy-aws-dev-region:
+        required: false
+        type: string
+        default: "sa-east-1"
+      iupipes-config-path:
+        required: false
+        type: string
+        default: ".iupipes.yml"
+      infra-terraform-version:
+        required: false
+        type: string
+        default: "1.1.9"
+      infra-terraform-state-backend-dev-bucket:
+        required: false
+        type: string
+        default: null
+      infra-terraform-state-backend-dev-key:
+        required: false
+        type: string
+        default: null
+      infra-terraform-working-directory:
+        required: false
+        type: string
+      infra-terraform-custom-role:
+        required: false
+        type: string
+      infra-terraform-aws-region:
+        required: false
+        type: string
+        default: "sa-east-1"
+      infra-terraform-aws-s3-provider-region:
+        required: false
+        type: string
+        default: "sa-east-1"
+      infra-terraform-statefile-acl:
+        required: false
+        type: string
+        default: "private"
+      infra-terraform-s3-data-retention:
+        required: false
+        type: string
+        default: "0"
+      infra-terraform-s3-data-classification:
+        required: false
+        type: string
+        default: "Interna"
+      environment:
+        required: false
+        type: string
+      infra-terraform-log-trace:
+        required: false
+        type: string
+        default: "false"
+      infra-terraform-destroy:
+        required: false
+        type: boolean
+        default: false
+      execution-mode:
+        type: string
+        required: false
+        description: Modelo de Execução do Terraform
+        default: plan
+      aws-statefile-acl:
+        required: false
+        type: string
+        default: "private"
+      aws-s3-data-retention:
+        required: false
+        type: number
+        default: 0
+      aws-s3-data-classification:
+        required: false
+        type: string
+        default: "Interna"
+      change-type:
+        required: false
+        description: "Identificar se é implantacao de infra standalone ou de aplicacao"
+        type: string
+        default: "infra"
+      deploy-role-duration-seconds:
+        required: false
+        type: string
+        default: "3600"
+      infra-terraform-custom-var-flag:
+        required: false
+        type: string
+        default: ""
+      infra-terraform-disable-provider:
+        required: false
+        type: string
+        default: ""
+      infra-terraform-owner-contact-email:
+        required: false
+        type: string
+        default: ""
+      infra-terraform-tech-team-email:
+        required: false
+        type: string
+        default: ""
+    secrets:
+      args:
+        required: false
+
+jobs:
+  terraform:
+    name: "terraform"
+    environment: ${{ inputs.environment }}
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - name: Checkout
+        uses: wantoli/up-action-external-management/.github/actions/actions/checkout@v1
+
+      - name: Config parser
+        id: action-parse
+        uses: wantoli/up-action-config-parse@v1
+        with:
+          configPath: ${{ inputs.iupipes-config-path }}
+          reusableInputs: "${{ toJSON(inputs) }}"
+
+      - name: AWS Setup
+        run: |
+          if [ "${{ inputs.environment }}" == "dev" ]; then
+            echo "AWS_ACCOUNTID=${{ steps.action-parse.outputs.deploy-aws-dev-account }}" >> $GITHUB_ENV
+            echo "AWS_REGION=${{ steps.action-parse.outputs.deploy-aws-dev-region }}" >> $GITHUB_ENV
+            echo "environment=dev" >> $GITHUB_ENV
+          else
+            echo "Ambiente nao mapeado!"
+            exit 1
+          fi
+
+          if [[ -n "${{ steps.action-parse.outputs.infra-terraform-aws-region }}" ]]; then
+            echo "AWS_REGION=${{ steps.action-parse.outputs.infra-terraform-aws-region }}" >> $GITHUB_ENV
+          fi
+
+          if [[ -n "${{ steps.action-parse.outputs.infra-terraform-custom-role }}" ]]; then
+            echo "ROLE_NAME=${{ steps.action-parse.outputs.infra-terraform-custom-role }}" >> $GITHUB_ENV
+          else
+            echo "ROLE_NAME=wantoli-github-repo-${{ github.repository_id }}" >> $GITHUB_ENV
+          fi
+
+      - name: AWS Login
+        id: aws-login
+        uses: wantoli/up-action-external-management/.github/actions/aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume:        arn:aws:iam::${{ env.AWS_ACCOUNTID }}:role/${{ env.ROLE_NAME }}
+          aws-region:            ${{ env.AWS_REGION }}
+          role-duration-seconds: ${{ steps.action-parse.outputs.deploy-role-duration-seconds }}
+          role-session-name:     ${{ github.repository }}-${{ github.run_id }}
+
+      - name: Create State file S3 Bucket for Backend
+        working-directory: ${{ steps.action-parse.outputs.infra-terraform-working-directory }}
+        run: |
+          AWS_ACCOUNT=$(aws sts get-caller-identity --query "Account" --output text)
+          echo "AWS Account: ${AWS_ACCOUNT}"
+
+          if [ "${{ inputs.environment }}" == "dev" ]; then
+            BUCKET_BACKEND="${{ steps.action-parse.outputs.infra-terraform-state-backend-dev-bucket }}"
+            BUCKET_BACKEND_KEY="${{ steps.action-parse.outputs.infra-terraform-state-backend-dev-key }}"
+          else
+            echo "Ambiente nao mapeado!"
+            exit 1
+          fi
+
+          BUCKET_BACKEND=${BUCKET_BACKEND:-$AWS_ACCOUNT-statefile-terraform}
+          BUCKET_BACKEND_KEY=${BUCKET_BACKEND_KEY:-${{ env.environment }}/${{ env.AWS_REGION }}/${{ github.repository_id }}}
+
+          echo "BUCKET_BACKEND=${BUCKET_BACKEND}" >> $GITHUB_ENV
+          echo "BUCKET_BACKEND_KEY=${BUCKET_BACKEND_KEY}" >> $GITHUB_ENV
+
+          if aws s3api head-bucket --bucket ${BUCKET_BACKEND} 2>/dev/null; then
+            echo "O Bucket de State File já existe!!!"
+          else
+            ACL=${{ steps.action-parse.outputs.infra-terraform-aws-statefile-acl }}
+            if [ -z "$ACL" ]; then
+              ACL=${{ inputs.aws-statefile-acl }}
+            fi
+            echo "ACL: ${ACL}"
+
+            aws s3api create-bucket --acl ${ACL} \
+              --region ${{ steps.action-parse.outputs.infra-terraform-aws-s3-provider-region }} \
+              --create-bucket-configuration LocationConstraint=${{ steps.action-parse.outputs.infra-terraform-aws-s3-provider-region }} \
+              --bucket ${BUCKET_BACKEND} || true
+          fi
+
+          if [[ "${BUCKET_BACKEND}" = "${AWS_ACCOUNT}-statefile-terraform" ]]; then
+            echo "Atualizando a policy Bucket ${BUCKET_BACKEND}"
+            aws s3api put-bucket-versioning --bucket ${BUCKET_BACKEND} \
+              --versioning-configuration Status=Enabled || true
+            aws s3api put-bucket-policy --bucket ${BUCKET_BACKEND} \
+              --policy '{"Version":"2012-10-17","Statement":[{"Effect":"Deny","Principal":"*","Action":"*","Resource":["arn:aws:s3:::'${BUCKET_BACKEND}'/*","arn:aws:s3:::'${BUCKET_BACKEND}'"],"Condition":{"Bool":{"aws:SecureTransport":"false"}}}]}'
+          else
+            echo "Atualização do s3 ${BUCKET_BACKEND} foi ignorada por ser um s3 customizado."
+          fi
+
+      - name: Move State file S3 Bucket and print path
+        working-directory: ${{ steps.action-parse.outputs.infra-terraform-working-directory }}
+        run: |
+          if aws s3api head-object --bucket ${{ env.BUCKET_BACKEND }} --key ${{ env.environment }}/${{ github.repository_id }} &>/dev/null; then
+            aws s3api get-object --bucket ${{ env.BUCKET_BACKEND }} --key ${{ env.environment }}/${{ github.repository_id }} ${{ github.repository_id }} &>/dev/null
+            if grep -R "${{ env.AWS_REGION }}" ${{ github.repository_id }} &>/dev/null; then
+              echo "Movendo tf-state para o path da região ${{ env.AWS_REGION }}"
+              aws s3 mv s3://${{ env.BUCKET_BACKEND }}/${{ env.environment }}/${{ github.repository_id }} s3://${{ env.BUCKET_BACKEND }}/${{ env.environment }}/${{ env.AWS_REGION }}/${{ github.repository_id }}
+            fi
+          fi
+          echo "/${BUCKET_BACKEND}/${BUCKET_BACKEND_KEY}"
+
+      - name: Create Terraform Provider
+        working-directory: ${{ steps.action-parse.outputs.infra-terraform-working-directory }}
+        run: |
+          if [ "${{ steps.action-parse.outputs.infra-terraform-disable-provider }}" == "true" ]; then
+            echo "Não será gerado o bloco provider aws devido a ter sido desabilitada no .iupipes.yml"
+          else
+            if [ -f "default_tags.hcl" ]; then
+              default_tags=$(cat default_tags.hcl)
+              echo "provider \"aws\" {
+                ignore_tags { key_prefixes = [\"c7n\"]}
+                default_tags {
+                  tags = $default_tags
+                }
+            }" > provider.tf
+            else
+              echo "provider \"aws\" {
+                      ignore_tags { key_prefixes = [\"c7n\"]}
+              }" > provider.tf
+            fi
+          fi
+
+          echo "terraform {
+           backend \"s3\" {
+             bucket  = \"${BUCKET_BACKEND}\"
+             key     = \""${BUCKET_BACKEND_KEY}"\"
+             region  = \"${{ steps.action-parse.outputs.infra-terraform-aws-s3-provider-region }}\"
+             encrypt = true
+           }
+          }" >> provider.tf
+          cat -n provider.tf
+
+      - name: Setup Terraform
+        uses: wantoli/up-action-external-management/.github/actions/hashicorp/setup-terraform@v1
+        with:
+          terraform_version: ${{ steps.action-parse.outputs.infra-terraform-version }}
+          terraform_wrapper: false
+
+      - name: Create Variables
+        working-directory: ${{ steps.action-parse.outputs.infra-terraform-working-directory }}
+        env:
+          TFVARS_PATH: "inventories/${{ env.environment }}/terraform.tfvars"
+          GIT_REPO_ID: ${{ github.repository_id }}
+          GIT_REPO_NAME: ${{ steps.action-parse.outputs.wantoli-repo-name }}
+          IUPIPES_ENVIRONMENT: ${{ env.environment }}
+          IUPIPES_BUILD_VERSION: ${{ github.run_number }}-${{ github.sha }}
+        run: |
+          echo -e "\ngithub_repo_id = \"${GIT_REPO_ID}\"" >> ${{ env.TFVARS_PATH }}
+          echo -e "\ngithub_repo_name = \"${GIT_REPO_NAME}\"" >> ${{ env.TFVARS_PATH }}
+          echo -e "\niupipes_environment = \"${IUPIPES_ENVIRONMENT}\"" >> ${{ env.TFVARS_PATH }}
+          echo -e "\niupipes_build_version = \"${IUPIPES_BUILD_VERSION}\"" >> ${{ env.TFVARS_PATH }}
+
+          echo "GIT_REPO_ID=${GIT_REPO_ID}" >> $GITHUB_ENV
+          echo "GIT_REPO_NAME=${GIT_REPO_NAME}" >> $GITHUB_ENV
+          echo "IUPIPES_ENVIRONMENT=${IUPIPES_ENVIRONMENT}" >> $GITHUB_ENV
+          echo "IUPIPES_BUILD_VERSION=${IUPIPES_BUILD_VERSION}" >> $GITHUB_ENV
+
+          cat <<EOF > iupipes_env_locals.tf
+          locals {
+            iupipes_deploy_environment = "${IUPIPES_ENVIRONMENT}"
+          }
+          EOF
+
+      - name: Terraform Init
+        id: init
+        working-directory: ${{ steps.action-parse.outputs.infra-terraform-working-directory }}
+        run: terraform init
+
+      - name: Terraform Validate
+        id: validate
+        working-directory: ${{ steps.action-parse.outputs.infra-terraform-working-directory }}
+        run: |
+          echo "terraform-command=terraform validate" >> $GITHUB_ENV
+          terraform validate -no-color 2>&1 | tee -a "${{ github.workspace }}/context.txt" ; exit ${PIPESTATUS[0]}
+
+      - name: Terraform Plan
+        id: plan
+        working-directory: ${{ steps.action-parse.outputs.infra-terraform-working-directory }}
+        if: |
+          (inputs.execution-mode == 'plan' || inputs.execution-mode == 'update-PR') &&
+          steps.action-parse.outputs.infra-terraform-destroy == 'false'
+        run: |
+          if [ ${{ steps.action-parse.outputs.infra-terraform-log-trace }} == "true" ]; then
+            export TF_LOG=TRACE
+          fi
+          echo "terraform-command=terraform plan" >> $GITHUB_ENV
+          terraform plan -var-file="inventories/${{ env.environment }}/terraform.tfvars" -no-color -input=false ${{ steps.action-parse.outputs.infra-terraform-custom-var-flag }} -out=./output.txt 2>&1 | tee -a "${{ github.workspace }}/context.txt" ; exit ${PIPESTATUS[0]}
+
+      - name: Terraform Show
+        id: show
+        working-directory: ${{ steps.action-parse.outputs.infra-terraform-working-directory }}
+        if: |
+          (inputs.execution-mode == 'plan' || inputs.execution-mode == 'update-PR') &&
+          steps.action-parse.outputs.infra-terraform-destroy == 'false'
+        run: |
+          export terraform_name=$(echo $GITHUB_REPOSITORY-$GITHUB_SHA | tr / - )
+          echo "terraform_name=${terraform_name}" >> $GITHUB_ENV
+          terraform show -json output.txt > $terraform_name-terraform.json
+          echo "filename_show=$PWD/$terraform_name-terraform.json" >> $GITHUB_ENV
+
+      - name: Terraform Destroy
+        id: destroy
+        if: |
+          inputs.execution-mode == 'apply' &&
+          steps.action-parse.outputs.infra-terraform-destroy == 'true' &&
+          (inputs.environment == 'dev' || inputs.environment == 'hom' || inputs.environment == 'prod')
+        working-directory: ${{ steps.action-parse.outputs.infra-terraform-working-directory }}
+        run: |
+          if [ ${{ steps.action-parse.outputs.infra-terraform-log-trace }} == "true" ]; then
+            export TF_LOG=TRACE
+          fi
+          echo "terraform-command=terraform destroy" >> $GITHUB_ENV
+          terraform destroy -var-file="inventories/${{ env.environment }}/terraform.tfvars" -no-color -auto-approve -input=false 2>&1 | tee -a "${{ github.workspace }}/context.txt" ; exit ${PIPESTATUS[0]}
+
+      - name: Terraform Apply
+        id: apply
+        if: |
+          inputs.execution-mode == 'apply' &&
+          steps.action-parse.outputs.infra-terraform-destroy == 'false' &&
+          (inputs.environment == 'dev' || inputs.environment == 'hom' || inputs.environment == 'prod')
+        working-directory: ${{ steps.action-parse.outputs.infra-terraform-working-directory }}
+        run: |
+          if [ ${{ steps.action-parse.outputs.infra-terraform-log-trace }} == "true" ]; then
+            export TF_LOG=TRACE
+          fi
+          echo "terraform-command=terraform apply" >> $GITHUB_ENV
+          terraform apply -var-file="inventories/${{ env.environment }}/terraform.tfvars" -auto-approve -input=false ${{ steps.action-parse.outputs.infra-terraform-custom-var-flag }} 2>&1 | tee -a "${{ github.workspace }}/context.txt" ; exit ${PIPESTATUS[0]}
+
+      - name: Terraform Output
+        working-directory: ${{ steps.action-parse.outputs.infra-terraform-working-directory }}
+        run: |
+          mkdir -p ~/files
+          terraform output -json -no-color > ~/files/outputs.json
+
+      - name: Save Output
+        uses: wantoli/up-action-external-management/.github/actions/actions/upload-artifact@v1
+        with:
+          name: tf-output
+          path: ~/files
