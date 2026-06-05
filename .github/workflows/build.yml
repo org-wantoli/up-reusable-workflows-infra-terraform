@@ -129,11 +129,11 @@ jobs:
     runs-on: ${{ inputs.runs-on }}
     steps:
       - name: Checkout
-        uses: wantoli/up-action-external-management/.github/actions/actions/checkout@v1
+        uses: org-wantoli/up-action-external-management/.github/actions/actions/checkout@v1
 
       - name: Config parser
         id: action-parse
-        uses: wantoli/up-action-config-parse@v1
+        uses: org-wantoli/up-action-config-parse@v1
         with:
           configPath: ${{ inputs.iupipes-config-path }}
           reusableInputs: "${{ toJSON(inputs) }}"
@@ -161,7 +161,7 @@ jobs:
 
       - name: AWS Login
         id: aws-login
-        uses: wantoli/up-action-external-management/.github/actions/aws-actions/configure-aws-credentials@v1
+        uses: org-wantoli/up-action-external-management/.github/actions/aws-actions/configure-aws-credentials@v1
         with:
           role-to-assume:        arn:aws:iam::${{ env.AWS_ACCOUNTID }}:role/${{ env.ROLE_NAME }}
           aws-region:            ${{ env.AWS_REGION }}
@@ -257,7 +257,7 @@ jobs:
           cat -n provider.tf
 
       - name: Setup Terraform
-        uses: wantoli/up-action-external-management/.github/actions/hashicorp/setup-terraform@v1
+        uses: org-wantoli/up-action-external-management/.github/actions/hashicorp/setup-terraform@v1
         with:
           terraform_version: ${{ steps.action-parse.outputs.infra-terraform-version }}
           terraform_wrapper: false
@@ -359,7 +359,7 @@ jobs:
           terraform output -json -no-color > ~/files/outputs.json
 
       - name: Save Output
-        uses: wantoli/up-action-external-management/.github/actions/actions/upload-artifact@v1
+        uses: org-wantoli/up-action-external-management/.github/actions/actions/upload-artifact@v1
         with:
           name: tf-output
           path: ~/files
