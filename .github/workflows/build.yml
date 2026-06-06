@@ -355,11 +355,5 @@ jobs:
       - name: Terraform Output
         working-directory: ${{ steps.action-parse.outputs.infra-terraform-working-directory }}
         run: |
-          mkdir -p ~/files
-          terraform output -json -no-color > ~/files/outputs.json
-
-      - name: Save Output
-        uses: org-wantoli/up-action-external-management/.github/actions/actions/upload-artifact@main
-        with:
-          name: tf-output
-          path: ~/files
+          OUTPUT=$(terraform output -json -no-color)
+          echo "json=${OUTPUT}" >> "$GITHUB_OUTPUT"
