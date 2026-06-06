@@ -110,14 +110,6 @@ on:
         required: false
         type: string
         default: ""
-      infra-terraform-owner-contact-email:
-        required: false
-        type: string
-        default: ""
-      infra-terraform-tech-team-email:
-        required: false
-        type: string
-        default: ""
     secrets:
       args:
         required: false
