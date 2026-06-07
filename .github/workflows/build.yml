@@ -19,6 +19,9 @@ on:
       deploy-aws-dev-account:
         required: false
         type: string
+      deploy-aws-config-account:
+        required: false
+        type: string
       deploy-aws-dev-region:
         required: false
         type: string
@@ -151,11 +154,18 @@ jobs:
             echo "ROLE_NAME=wantoli-github-repo-${{ github.repository_id }}" >> $GITHUB_ENV
           fi
 
+          if [[ -n "${{ steps.action-parse.outputs.deploy-aws-config-account }}" ]]; then
+            echo "AWS_CONFIG_ACCOUNTID=${{ steps.action-parse.outputs.deploy-aws-config-account }}" >> $GITHUB_ENV
+          else 
+            echo "Config role nao mapeadoa!"
+            exit 1
+          fi
+
       - name: AWS Login
         id: aws-login
         uses: org-wantoli/up-action-external-management/.github/actions/aws-actions/configure-aws-credentials@main
         with:
-          role-to-assume:        arn:aws:iam::${{ env.AWS_ACCOUNTID }}:role/${{ env.ROLE_NAME }}
+          role-to-assume:        arn:aws:iam::${{ env.AWS_CONFIG_ACCOUNTID }}:role/${{ env.ROLE_NAME }}
           aws-region:            ${{ env.AWS_REGION }}
           role-duration-seconds: ${{ steps.action-parse.outputs.deploy-role-duration-seconds }}
           role-session-name:     ${{ github.repository }}-${{ github.run_id }}
