@@ -170,62 +170,41 @@ jobs:
           role-duration-seconds: ${{ steps.action-parse.outputs.deploy-role-duration-seconds }}
           role-session-name:     ${{ github.repository_owner }}-${{ github.event.repository.name }}-${{ github.run_id }}
 
-      - name: Create State file S3 Bucket for Backend
-        working-directory: ${{ steps.action-parse.outputs.infra-terraform-working-directory }}
-        run: |
-          AWS_ACCOUNT=$(aws sts get-caller-identity --query "Account" --output text)
-          echo "AWS Account: ${AWS_ACCOUNT}"
+      - name: Assume TerraformStateAccessRole
+        uses: org-wantoli/up-action-external-management/.github/actions/aws-actions/configure-aws-credentials@main
+        with:
+          role-to-assume:    arn:aws:iam::${{ env.AWS_CONFIG_ACCOUNTID }}:role/TerraformStateAccessRole
+          aws-region:        ${{ env.AWS_REGION }}
+          role-chaining:     true
+          role-session-name: ${{ github.repository_owner }}-${{ github.event.repository.name }}-state-${{ github.run_id }}
 
-          if [ "${{ inputs.environment }}" == "dev" ]; then
-            BUCKET_BACKEND="${{ steps.action-parse.outputs.infra-terraform-state-backend-dev-bucket }}"
-            BUCKET_BACKEND_KEY="${{ steps.action-parse.outputs.infra-terraform-state-backend-dev-key }}"
-          else
-            echo "Ambiente nao mapeado!"
-            exit 1
-          fi
+      - name: Assume TerraformBackendRole
+        uses: org-wantoli/up-action-external-management/.github/actions/aws-actions/configure-aws-credentials@main
+        with:
+          role-to-assume:    arn:aws:iam::${{ env.AWS_ACCOUNTID }}:role/TerraformBackendRole
+          aws-region:        ${{ env.AWS_REGION }}
+          role-chaining:     true
+          role-session-name: ${{ github.repository_owner }}-${{ github.event.repository.name }}-backend-${{ github.run_id }}
 
-          BUCKET_BACKEND=${BUCKET_BACKEND:-$AWS_ACCOUNT-statefile-terraform}
-          BUCKET_BACKEND_KEY=${BUCKET_BACKEND_KEY:-${{ env.environment }}/${{ env.AWS_REGION }}/${{ github.repository_id }}}
+      - name: Setup Terraform Backend
+        id: terraform-backend
+        uses: org-wantoli/up-action-terraform-backend-setup@main
+        with:
+          environment:            ${{ inputs.environment }}
+          aws-region:             ${{ env.AWS_REGION }}
+          aws-s3-provider-region: ${{ steps.action-parse.outputs.infra-terraform-aws-s3-provider-region }}
+          state-backend-bucket:   ${{ steps.action-parse.outputs.infra-terraform-state-backend-dev-bucket }}
+          state-backend-key:      ${{ steps.action-parse.outputs.infra-terraform-state-backend-dev-key }}
+          statefile-acl:          ${{ steps.action-parse.outputs.infra-terraform-aws-statefile-acl || inputs.aws-statefile-acl }}
+          repository-id:          ${{ github.repository_id }}
 
-          echo "BUCKET_BACKEND=${BUCKET_BACKEND}" >> $GITHUB_ENV
-          echo "BUCKET_BACKEND_KEY=${BUCKET_BACKEND_KEY}" >> $GITHUB_ENV
-
-          if aws s3api head-bucket --bucket ${BUCKET_BACKEND} 2>/dev/null; then
-            echo "O Bucket de State File já existe!!!"
-          else
-            ACL=${{ steps.action-parse.outputs.infra-terraform-aws-statefile-acl }}
-            if [ -z "$ACL" ]; then
-              ACL=${{ inputs.aws-statefile-acl }}
-            fi
-            echo "ACL: ${ACL}"
-
-            aws s3api create-bucket --acl ${ACL} \
-              --region ${{ steps.action-parse.outputs.infra-terraform-aws-s3-provider-region }} \
-              --create-bucket-configuration LocationConstraint=${{ steps.action-parse.outputs.infra-terraform-aws-s3-provider-region }} \
-              --bucket ${BUCKET_BACKEND} || true
-          fi
-
-          if [[ "${BUCKET_BACKEND}" = "${AWS_ACCOUNT}-statefile-terraform" ]]; then
-            echo "Atualizando a policy Bucket ${BUCKET_BACKEND}"
-            aws s3api put-bucket-versioning --bucket ${BUCKET_BACKEND} \
-              --versioning-configuration Status=Enabled || true
-            aws s3api put-bucket-policy --bucket ${BUCKET_BACKEND} \
-              --policy '{"Version":"2012-10-17","Statement":[{"Effect":"Deny","Principal":"*","Action":"*","Resource":["arn:aws:s3:::'${BUCKET_BACKEND}'/*","arn:aws:s3:::'${BUCKET_BACKEND}'"],"Condition":{"Bool":{"aws:SecureTransport":"false"}}}]}'
-          else
-            echo "Atualização do s3 ${BUCKET_BACKEND} foi ignorada por ser um s3 customizado."
-          fi
-
-      - name: Move State file S3 Bucket and print path
-        working-directory: ${{ steps.action-parse.outputs.infra-terraform-working-directory }}
-        run: |
-          if aws s3api head-object --bucket ${{ env.BUCKET_BACKEND }} --key ${{ env.environment }}/${{ github.repository_id }} &>/dev/null; then
-            aws s3api get-object --bucket ${{ env.BUCKET_BACKEND }} --key ${{ env.environment }}/${{ github.repository_id }} ${{ github.repository_id }} &>/dev/null
-            if grep -R "${{ env.AWS_REGION }}" ${{ github.repository_id }} &>/dev/null; then
-              echo "Movendo tf-state para o path da região ${{ env.AWS_REGION }}"
-              aws s3 mv s3://${{ env.BUCKET_BACKEND }}/${{ env.environment }}/${{ github.repository_id }} s3://${{ env.BUCKET_BACKEND }}/${{ env.environment }}/${{ env.AWS_REGION }}/${{ github.repository_id }}
-            fi
-          fi
-          echo "/${BUCKET_BACKEND}/${BUCKET_BACKEND_KEY}"
+      - name: Assume TerraformDeployRole
+        uses: org-wantoli/up-action-external-management/.github/actions/aws-actions/configure-aws-credentials@main
+        with:
+          role-to-assume:    arn:aws:iam::${{ env.AWS_ACCOUNTID }}:role/TerraformDeployRole
+          aws-region:        ${{ env.AWS_REGION }}
+          role-chaining:     true
+          role-session-name: ${{ github.repository_owner }}-${{ github.event.repository.name }}-deploy-${{ github.run_id }}
 
       - name: Create Terraform Provider
         working-directory: ${{ steps.action-parse.outputs.infra-terraform-working-directory }}
