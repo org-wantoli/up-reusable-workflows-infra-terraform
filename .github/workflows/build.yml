@@ -198,6 +198,14 @@ jobs:
           statefile-acl:          ${{ steps.action-parse.outputs.infra-terraform-aws-statefile-acl || inputs.aws-statefile-acl }}
           repository-id:          ${{ github.repository_id }}
 
+      - name: Assume TerraformStateAccessRole for Deploy
+        uses: org-wantoli/up-action-external-management/.github/actions/aws-actions/configure-aws-credentials@main
+        with:
+          role-to-assume:    arn:aws:iam::${{ env.AWS_CONFIG_ACCOUNTID }}:role/TerraformStateAccessRole
+          aws-region:        ${{ env.AWS_REGION }}
+          role-chaining:     true
+          role-session-name: ${{ github.repository_owner }}-${{ github.event.repository.name }}-state-${{ github.run_id }}
+
       - name: Assume TerraformDeployRole
         uses: org-wantoli/up-action-external-management/.github/actions/aws-actions/configure-aws-credentials@main
         with:
@@ -232,7 +240,7 @@ jobs:
              bucket  = \"${BUCKET_BACKEND}\"
              key     = \""${BUCKET_BACKEND_KEY}"\"
              region  = \"${{ steps.action-parse.outputs.infra-terraform-aws-s3-provider-region }}\"
-             encrypt = true
+             encrypt = false
            }
           }" >> provider.tf
           cat -n provider.tf
