@@ -203,7 +203,7 @@ jobs:
         with:
           role-to-assume:    arn:aws:iam::${{ env.AWS_CONFIG_ACCOUNTID }}:role/TerraformStateAccessRole
           aws-region:        ${{ env.AWS_REGION }}
-          role-chaining:     true
+          role-chaining:     false
           role-session-name: ${{ github.repository_owner }}-${{ github.event.repository.name }}-state-${{ github.run_id }}
 
       - name: Assume TerraformDeployRole
