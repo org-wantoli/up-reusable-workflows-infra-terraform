@@ -168,7 +168,7 @@ jobs:
           role-to-assume:        arn:aws:iam::${{ env.AWS_CONFIG_ACCOUNTID }}:role/${{ env.ROLE_NAME }}
           aws-region:            ${{ env.AWS_REGION }}
           role-duration-seconds: ${{ steps.action-parse.outputs.deploy-role-duration-seconds }}
-          role-session-name:     ${{ github.repository }}-${{ github.run_id }}
+          role-session-name:     ${{ github.repository_owner }}-${{ github.event.repository.name }}-${{ github.run_id }}
 
       - name: Create State file S3 Bucket for Backend
         working-directory: ${{ steps.action-parse.outputs.infra-terraform-working-directory }}
